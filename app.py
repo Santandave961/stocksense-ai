@@ -136,15 +136,25 @@ hr {
          border-color: #1e2130;
 }
 </style>
-""", unsafe_allow_html = True)
+""", unsafe_allow_html = True)   
 
 @st.cache_data(show_spinner=False)
 def load_data(ticker, start, end):
-         raw = yf.download(ticker, start=start, end=end, auto_adjust=True)
+         raw = yf.download(
+              ticker,
+              start=start,
+              end=end,
+              auto_adjust=True,
+              group_by='column'            
+         )
          if raw.empty:
              return None
-         raw.columns = raw.columns.get_level_values(0)
-         df = raw[['Close', 'High', 'Low', 'Open', 'Volume']].copy()
+         raw.columns = [col[0] if isinstance(col, tuple) else col for col in raw.columns]
+
+         available = [c for c in ['Open', 'High', 'Low', 'Close', 'Volume'] if c in raw.columns]
+         df = raw[available].copy()
+                        
+         
          df['Returns'] = df['Close'].pct_change()
          df['Volatility'] = df['Returns'].rolling(30).std()
          df['MA_30'] = df['Close'].rolling(30).mean()
@@ -323,8 +333,9 @@ else:
 
     if df is None or df.empty:
            st.error(f" No data found for **{ticker}**. Please check the ticker symbol.")
-           st.stop()
-
+           st.warning("Debug: Try upgrading yfinance with `pip install --upgrade yfinance` to fix potential multiindex issues.")
+           st.stop() 
+           
     latest_close = df['Close'].iloc[-1]
     prev_close = df['Close'].iloc[-2]
     change = latest_close - prev_close
@@ -332,7 +343,116 @@ else:
     volatility = df['Volatility'].iloc[-1] * 100
     rsi_val = df['RSI'].iloc[-1]
     total_return = ((df['Close'].iloc[-1] / df['Close'].iloc[0]) - 1) * 100
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+
+    def metric_card(col, label, value, sub=None):
+        with col:
+               st.markdown(f"""
+               <div class="metric_card">
+                    <div class="metric-value">{value}</div>
+                    <div class="metric-label">{label}</div>
+                    {f'div style="color:#00ff88;font-size:0.75rem;margin-top:4px">{sub}</div>' if sub else ''}
+               </div>
+               """, unsafe_allow_html=True)
+
+    color = "#00ff88" if change >= 0 else "#ff6b6b"
+    arrow = " ^ " if change >= 0 else " ^ "
+
+    metric_card(k1, "Latest Close", f"${latest_close:,.2f}")
+    with k2:
+           st.markdown(f"""
+           <div class="metric-card">
+                <div class="metric-value" style="color:{color}">{arrow} {abs(change_pct):.2f}%</div>
+                <div class="metric-label">Daily Change</div>
+                <div class="color:{color};font-size:0.75rem;margin-top:4px">${change:+.2f}</div>
+           </div>
+           """, unsafe_allow_html=True)
+    metric_card(k3, "30D Volatility", f"{volatility:.2f}%")
+    metric_card(k4, "RSI (14)", f"{total_return:.1f}%")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    st.markdown('<p class="section-header">Price History and Moving Averages</p>', unsafe_allow_html=True)
+    st.pyplot(plot_rsi(df))
+
+    st.markdown("---")
+
+    st.markdown('<p class="section-header">Forecast</p>', unsafe_allow_html=True)
+
+
+    prophet_results = None
+    ma_results = None
+
+    if forecast_model in ["Prophet", "Both"]:
+           with st.spinner("Running Prophet Forecast..."):
+                  try:
+                      forecast, p_mae, p_rmse = run_prophet(df, periods=forecast_days)
+                      prophet_results = (forecast, p_mae, p_rmse)
+                      st.pyplot(plot_forecast(df, forecast, ticker, "Prophet"))
+                  except Exception as e:
+                      st.warning(f"Prophet failed: {e}. Try: `conda install -c conda-forge prophet`")
+    if forecast_model in ["Moving Average", "Both"]:
+           with st.spinner("Running Moving Average Forecast..."):
+               ma_forecast, ma_mae, ma_rmse = run_moving_average(df, periods=forecast_days)
+               ma_results = (ma_forecast, ma_mae, ma_rmse)
+               st.pyplot(plot_forecast(df, ma_forecast, ticker, "Moving Average"))
+
+    if prophet_results and ma_results:
+        st.markdown("---")
+        st.markdown('<p class="section-header">Model Comparison</p>', unsafe_allow_html=True)
+
+        _, p_mae, p_rmse = prophet_results
+        _, ma_mae, ma_rmse = ma_results
+
+        winner = "Prophet" if p_rmse < ma_rmse else "Moving Average"
+
+        c1, c2 = st.columns(2)
+        with c1:
+            badge = f'<div class="winner-badge"> BEST MODEL</div>' if winner == "Prophet" else ""
+            st.markdown(f"""
+            <div class= "metric-card">
+                 <div class="metric-value">Mov. Avg</div>
+                 <div class="metric-label">MAE: {ma_mae:.4f} &nbsp;|&nbsp; RMSE: {ma_rmse:.4f}</div>
+                 {badge}
+            <div>
+            """, unsafe_allow_html=True)
+    elif prophet_results:
+          _, p_mae, p_rmse = prophet_results
+          st.markdown(f"""
+          <div class="metric-card" style="max-width:400px">
+                 <div class="metric-value">Prophet</div>
+                 <div class="metric-label">MAE: {p_mae:.4f} &nbsp;|&nbsp; RMSE: {p_rmse:.4f}</div>
+          </div>
+          """, unsafe_allow_html=True)
     
+    elif ma_results:
+          _, ma_mae, ma_rmse = ma_results
+          st.markdown(f"""
+          <div class="metric-card" style="max-width:400px">
+                 <div class="metric-value">Prophet</div>
+                 <div class="metric-label">MAE: {p_mae:.4f} &nbsp;|&nbsp; RMSE: {ma_rmse:.4f}</div>
+          </div>
+          """, unsafe_allow_html=True)
+
+    with st.expander(" View Raw Data"):
+        st.dataframe(
+            df.tail(100).style.background_gradient(cmap='Blues', subset=['Close']),
+            use_container_width=True
+        )
+
+
+          
+
+
+
+
+
+
+        
+
+
+
       
 
               
